@@ -1,0 +1,116 @@
+import * as react from "react";
+import { ReactNode } from "react";
+import * as THREE from "three";
+
+/**
+ * Shared uniform references. Since these are `{ value }` objects,
+ * spreading them into consumer ShaderMaterials shares the same references.
+ * Provider mutates `.value` each frame → all consumers auto-update.
+ */
+interface WaterCausticsUniforms {
+  waterTexture: {
+    value: THREE.Texture | null;
+  };
+  waterPosition: {
+    value: THREE.Vector3;
+  };
+  waterSize: {
+    value: number;
+  };
+  chromaticAberration: {
+    value: number;
+  };
+  time: {
+    value: number;
+  };
+  waterSurfaceY: {
+    value: number;
+  };
+  depthColor: {
+    value: THREE.Color;
+  };
+  depthDistance: {
+    value: number;
+  };
+  lightDir: {
+    value: THREE.Vector3;
+  };
+}
+interface WaterCausticsContextValue {
+  uniforms: WaterCausticsUniforms;
+  addDrop: (x: number, y: number, radius?: number, strength?: number) => void;
+}
+declare function useWaterCaustics(): WaterCausticsContextValue;
+interface WaterCausticsProviderProps {
+  children: ReactNode;
+  position?: [number, number, number];
+  size?: number;
+  enableAutoDrops?: boolean;
+  chromaticAberration?: number;
+  waterSurfaceY?: number;
+  depthColor?: string;
+  depthDistance?: number;
+  lightDir?: [number, number, number];
+}
+declare function WaterCausticsProvider({
+  children,
+  position,
+  size,
+  enableAutoDrops,
+  chromaticAberration,
+  waterSurfaceY,
+  depthColor,
+  depthDistance,
+  lightDir,
+}: WaterCausticsProviderProps): react.JSX.Element;
+interface CausticsInteractionPlaneProps {
+  enableMouseInteraction?: boolean;
+}
+declare function CausticsInteractionPlane({
+  enableMouseInteraction,
+}: CausticsInteractionPlaneProps): react.JSX.Element;
+
+declare const vertexShader =
+  "\n  varying vec2 vUv;\n  void main() {\n    vUv = uv;\n    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);\n  }\n";
+declare const dropFragmentShader =
+  "\n  uniform sampler2D waterTexture;\n  uniform vec2 center;\n  uniform float radius;\n  uniform float strength;\n  varying vec2 vUv;\n\n  void main() {\n    vec4 info = texture2D(waterTexture, vUv);\n    float drop = max(0.0, 1.0 - length(center * 0.5 + 0.5 - vUv) / radius);\n    drop = 0.5 - cos(drop * 3.14159) * 0.5;\n\n    float dampingFactor = 1.5;\n    info.r += drop * strength * dampingFactor;\n\n    gl_FragColor = info;\n  }\n";
+declare const updateFragmentShader =
+  "\n  uniform sampler2D waterTexture;\n  uniform vec2 delta;\n  varying vec2 vUv;\n\n  void main() {\n    vec4 info = texture2D(waterTexture, vUv);\n\n    vec2 dx = vec2(delta.x, 0.0);\n    vec2 dy = vec2(0.0, delta.y);\n\n    float average = (\n      texture2D(waterTexture, vUv - dx).r +\n      texture2D(waterTexture, vUv - dy).r +\n      texture2D(waterTexture, vUv + dx).r +\n      texture2D(waterTexture, vUv + dy).r\n    ) * 0.25;\n\n    float restingHeight = 0.4;\n    float springForce = (restingHeight - info.r) * 0.006;\n\n    info.g += (average - info.r) * 2.0;\n    info.g *= 0.985;\n    info.g += springForce;\n    info.r += info.g;\n\n    gl_FragColor = info;\n  }\n";
+declare const normalFragmentShader =
+  "\n  uniform sampler2D waterTexture;\n  uniform vec2 delta;\n  varying vec2 vUv;\n\n  void main() {\n    vec4 info = texture2D(waterTexture, vUv);\n\n    vec2 dx = vec2(delta.x, 0.0);\n    vec2 dy = vec2(0.0, delta.y);\n\n    float h0 = texture2D(waterTexture, vUv - dx - dy).r;\n    float h1 = texture2D(waterTexture, vUv - dy).r;\n    float h2 = texture2D(waterTexture, vUv + dx - dy).r;\n    float h3 = texture2D(waterTexture, vUv - dx).r;\n    float h4 = texture2D(waterTexture, vUv).r;\n    float h5 = texture2D(waterTexture, vUv + dx).r;\n    float h6 = texture2D(waterTexture, vUv - dx + dy).r;\n    float h7 = texture2D(waterTexture, vUv + dy).r;\n    float h8 = texture2D(waterTexture, vUv + dx + dy).r;\n\n    float amplitudeScale = 1.5;\n    float gx = (h2 + 2.0 * h5 + h8 - (h0 + 2.0 * h3 + h6)) * amplitudeScale;\n    float gy = (h6 + 2.0 * h7 + h8 - (h0 + 2.0 * h1 + h2)) * amplitudeScale;\n\n    info.b = gx;\n    info.a = gy;\n\n    gl_FragColor = info;\n  }\n";
+declare const projectedCausticsVertexShader =
+  "\n  varying vec2 vUv;\n  varying vec3 vWorldPosition;\n\n  void main() {\n    vUv = uv;\n    vec4 worldPos = modelMatrix * vec4(position, 1.0);\n    vWorldPosition = worldPos.xyz;\n    gl_Position = projectionMatrix * viewMatrix * worldPos;\n  }\n";
+declare const projectedCausticsFragmentShader =
+  "\n  uniform sampler2D waterTexture;\n  uniform vec3 waterPosition;\n  uniform float waterSize;\n  uniform float chromaticAberration;\n  uniform float time;\n  uniform vec3 baseColor;\n\n  varying vec2 vUv;\n  varying vec3 vWorldPosition;\n\n  void main() {\n    // Project world XZ to water UV space\n    vec2 waterUV = (vWorldPosition.xz - waterPosition.xz) / waterSize + 0.5;\n\n    // Subtle time-based distortion\n    vec2 distortedUv = waterUV + vec2(\n      sin(waterUV.y * 5.0 + time * 0.5) * 0.00002,\n      cos(waterUV.x * 15.0 + time * 0.5) * 0.00002\n    );\n\n    // Sample water simulation\n    vec4 waterData = texture2D(waterTexture, distortedUv);\n    float gx = waterData.b;\n    float gy = waterData.a;\n\n    // Caustic intensity from gradient magnitude\n    float gradient = length(vec2(gx, gy));\n    float caustic = smoothstep(0.0, 0.3, gradient);\n    caustic = pow(caustic, 0.5);\n\n    // Chromatic aberration\n    float caR = texture2D(waterTexture, distortedUv + vec2(chromaticAberration, 0.0)).b;\n    float caB = texture2D(waterTexture, distortedUv - vec2(chromaticAberration, 0.0)).b;\n    vec3 aberration = vec3(\n      smoothstep(0.0, 0.4, abs(caR)) * 0.15,\n      0.0,\n      smoothstep(0.0, 0.4, abs(caB)) * 0.15\n    );\n\n    // Combine base color with caustic light\n    vec3 causticLight = vec3(0.8, 0.9, 1.0) * caustic * 0.6 + aberration;\n    vec3 finalColor = baseColor + causticLight + vec3(caustic * 0.3);\n\n    gl_FragColor = vec4(finalColor, 1.0);\n  }\n";
+declare const waterSurfaceVertexShader =
+  "\n  uniform sampler2D waterTexture;\n  uniform vec3 waterPosition;\n  uniform float waterSize;\n  uniform float heightScale;\n\n  void main() {\n    // Compute world position for water UV projection\n    vec4 worldPos = modelMatrix * vec4(position, 1.0);\n    vec2 waterUV = (worldPos.xz - waterPosition.xz) / waterSize + 0.5;\n\n    // Sample center height\n    float height = texture2D(waterTexture, waterUV).r;\n    float restHeight = 0.4;\n\n    // Displace vertex along local Z (becomes world Y after -90deg X rotation)\n    csm_Position.z += (height - restHeight) * heightScale;\n\n    // Sample neighbor heights for normal calculation\n    float texel = 1.0 / 256.0;\n    float hL = texture2D(waterTexture, waterUV + vec2(-texel, 0.0)).r;\n    float hR = texture2D(waterTexture, waterUV + vec2( texel, 0.0)).r;\n    float hD = texture2D(waterTexture, waterUV + vec2(0.0, -texel)).r;\n    float hU = texture2D(waterTexture, waterUV + vec2(0.0,  texel)).r;\n\n    // Finite difference normal in local space (plane XY, displacement along Z)\n    float normalScale = heightScale / (2.0 * texel * waterSize);\n    csm_Normal = normalize(vec3(\n      -(hR - hL) * normalScale,\n      -(hU - hD) * normalScale,\n      1.0\n    ));\n  }\n";
+declare const poolCausticsVertexShader =
+  "\n  varying vec2 vUv;\n  varying vec3 vWorldPosition;\n  varying vec3 vWorldNormal;\n\n  void main() {\n    vUv = uv;\n    vec4 worldPos = modelMatrix * vec4(position, 1.0);\n    vWorldPosition = worldPos.xyz;\n    vWorldNormal = normalize(mat3(modelMatrix) * normal);\n    gl_Position = projectionMatrix * viewMatrix * worldPos;\n  }\n";
+declare const poolCausticsFragmentShader =
+  "\n  uniform sampler2D waterTexture;\n  uniform vec3 waterPosition;\n  uniform float waterSize;\n  uniform float chromaticAberration;\n  uniform float time;\n  uniform float waterSurfaceY;\n  uniform vec3 depthColor;\n  uniform vec3 lightDir;\n\n  uniform sampler2D tileColor;\n  uniform sampler2D tileNormal;\n  uniform sampler2D tileRoughness;\n  uniform vec2 tileRepeat;\n  uniform float wallHeight;\n\n  varying vec2 vUv;\n  varying vec3 vWorldPosition;\n  varying vec3 vWorldNormal;\n\n  void main() {\n    vec3 normal = normalize(vWorldNormal);\n\n    // Discard top face\n    if (normal.y > 0.5) discard;\n\n    // Discard camera-facing wall faces\n    if (abs(normal.y) < 0.5) {\n      vec3 viewDir = normalize(cameraPosition - vWorldPosition);\n      float facing = dot(viewDir, normal);\n      if (facing > 0.0) discard;\n    }\n\n    // Tile UVs with repeat\n    vec2 tileUv = vUv * tileRepeat;\n    float roughness = texture2D(tileRoughness, tileUv).r;\n\n    // Refracted light direction through water surface (IOR_WATER = 1.333)\n    // lightDir: FROM scene TOWARD light (positive Y = above)\n    // Reference: madebyevan.com/webgl-water renderer.js\n    //   refractedLight = -refract(-light, vec3(0,1,0), IOR_AIR/IOR_WATER)\n    // Result points upward (from underwater fragment back toward water surface)\n    vec3 refractedDir = -refract(-lightDir, vec3(0.0, 1.0, 0.0), 1.0 / 1.333);\n\n    // Diffuse lighting using the INTERIOR-facing normal.\n    // Box geometry normals point OUTWARD, but we render the pool interior,\n    // so the face that receives light faces INWARD = -normal.\n    // e.g. floor outward normal = (0,-1,0), interior = (0,+1,0) \u2192 gets light from above.\n    float diffuse = max(0.0, dot(refractedDir, -normal));\n\n    // Sample water directly above this fragment (direct XZ projection).\n    // The reference projects along the refracted light ray, but that formula is designed\n    // for a pre-computed ray-traced caustic texture and overshoots the UV bounds on our\n    // larger pool, leaving edges/corners with no caustic.\n    // Directionality is already handled by the diffuse term above.\n    vec2 waterUV = (vWorldPosition.xz - waterPosition.xz) / waterSize + 0.5;\n\n    // Subtle time-based distortion\n    vec2 distortedUv = waterUV + vec2(\n      sin(waterUV.y * 15.0 + time * 0.5) * 0.002,\n      cos(waterUV.x * 15.0 + time * 0.5) * 0.002\n    );\n\n    // Sample water simulation\n    vec4 waterData = texture2D(waterTexture, distortedUv);\n    float gx = waterData.b;\n    float gy = waterData.a;\n\n    // Caustic intensity from gradient magnitude\n    float gradient = length(vec2(gx, gy));\n    float caustic = smoothstep(0.0, 0.3, gradient);\n    caustic = pow(caustic, 0.5);\n    caustic *= (1.0 - roughness * 0.5);\n\n    // Height-based attenuation for walls (stronger at bottom, weaker near surface)\n    if (abs(normal.y) < 0.5) {\n      float bottomY = waterPosition.y;\n      float topY = waterPosition.y + wallHeight;\n      float heightFactor = 1.0 - smoothstep(bottomY, topY, vWorldPosition.y);\n      caustic *= mix(0.3, 1.0, heightFactor);\n    }\n\n    // Chromatic aberration\n    float caR = texture2D(waterTexture, distortedUv + vec2(chromaticAberration, 0.0)).b;\n    float caB = texture2D(waterTexture, distortedUv - vec2(chromaticAberration, 0.0)).b;\n    vec3 aberration = vec3(\n      smoothstep(0.0, 0.4, abs(caR)) * 0.15,\n      0.0,\n      smoothstep(0.0, 0.4, abs(caB)) * 0.15\n    );\n\n    // Tile color with refraction distortion\n    vec2 refractionOffset = vec2(gx, gy) * 0.02;\n    vec3 tileCol = texture2D(tileColor, tileUv + refractionOffset).rgb;\n\n    vec3 finalColor;\n    // Above-water: standard tile with caustic tint\n    vec3 causticLightAbove = vec3(0.8, 0.9, 1.0) * caustic * 0.6 + aberration;\n    vec3 aboveColor = tileCol + causticLightAbove + vec3(caustic * 0.3);\n\n    // Underwater: dark ambient + white caustic highlight\n    vec3 underwaterAmbient = tileCol * 0.5 * depthColor * 1.2;\n    vec3 causticHighlight = tileCol * diffuse * caustic * 2.0;\n    vec3 underColor = underwaterAmbient + causticHighlight + aberration;\n\n    // Smooth blend: transition zone starts 0.3 units below water surface.\n    // smoothstep(high, low, y) \u2192 0 at/above surface, 1 fully underwater.\n    float underwaterBlend = smoothstep(waterSurfaceY, waterSurfaceY - 0.3, vWorldPosition.y);\n    finalColor = mix(aboveColor, underColor, underwaterBlend);\n\n    gl_FragColor = vec4(finalColor, 1.0);\n  }\n";
+declare const projectedTileCausticsFragmentShader =
+  "\n  uniform sampler2D waterTexture;\n  uniform vec3 waterPosition;\n  uniform float waterSize;\n  uniform float chromaticAberration;\n  uniform float time;\n\n  uniform sampler2D tileColor;\n  uniform sampler2D tileNormal;\n  uniform sampler2D tileRoughness;\n  uniform vec2 tileRepeat;\n\n  varying vec2 vUv;\n  varying vec3 vWorldPosition;\n\n  void main() {\n    // Project world XZ to water UV space\n    vec2 waterUV = (vWorldPosition.xz - waterPosition.xz) / waterSize + 0.5;\n\n    // Tile UVs with repeat\n    vec2 tileUv = vUv * tileRepeat;\n\n    // Sample tile textures\n    vec3 tileNorm = texture2D(tileNormal, tileUv).rgb * 2.0 - 1.0;\n    float roughness = texture2D(tileRoughness, tileUv).r;\n\n    // Subtle time-based distortion\n    vec2 distortedUv = waterUV + vec2(\n      sin(waterUV.y * 15.0 + time * 0.5) * 0.002,\n      cos(waterUV.x * 15.0 + time * 0.5) * 0.002\n    );\n\n    // Sample water simulation\n    vec4 waterData = texture2D(waterTexture, distortedUv);\n    float gx = waterData.b;\n    float gy = waterData.a;\n\n    // Caustic intensity from gradient magnitude\n    float gradient = length(vec2(gx, gy));\n    float caustic = smoothstep(0.0, 0.3, gradient);\n    caustic = pow(caustic, 0.5);\n\n    // Roughness affects caustic sharpness\n    caustic *= (1.0 - roughness * 0.5);\n\n    // Chromatic aberration\n    float caR = texture2D(waterTexture, distortedUv + vec2(chromaticAberration, 0.0)).b;\n    float caB = texture2D(waterTexture, distortedUv - vec2(chromaticAberration, 0.0)).b;\n    vec3 aberration = vec3(\n      smoothstep(0.0, 0.4, abs(caR)) * 0.15,\n      0.0,\n      smoothstep(0.0, 0.4, abs(caB)) * 0.15\n    );\n\n    // Refraction distortion on tile texture\n    vec2 refractionOffset = vec2(gx, gy) * 0.02;\n    vec3 refractedColor = texture2D(tileColor, tileUv + refractionOffset).rgb;\n\n    // Blend refracted tile color with caustics\n    vec3 causticLight = vec3(0.8, 0.9, 1.0) * caustic * 0.6 + aberration;\n    vec3 finalColor = refractedColor + causticLight + vec3(caustic * 0.3);\n\n    gl_FragColor = vec4(finalColor, 1.0);\n  }\n";
+declare const bubbleVertexShader =
+  "\n  varying vec3 vNormal;\n  varying vec3 vViewPosition;\n\n  void main() {\n    vNormal = normalize(normalMatrix * normal);\n    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);\n    vViewPosition = -mvPosition.xyz;\n    gl_Position = projectionMatrix * mvPosition;\n  }\n";
+declare const bubbleFragmentShader =
+  "\n  uniform float time;\n\n  varying vec3 vNormal;\n  varying vec3 vViewPosition;\n\n  void main() {\n    vec3 viewDir = normalize(vViewPosition);\n    vec3 normal = normalize(vNormal);\n\n    // Fresnel - bright rim at grazing angles\n    float fresnel = pow(1.0 - abs(dot(viewDir, normal)), 2.5);\n\n    // Specular highlight from light above\n    vec3 lightDir = normalize(vec3(0.0, 1.0, 0.0));\n    vec3 reflectDir = reflect(-lightDir, normal);\n    float spec = pow(max(dot(viewDir, reflectDir), 0.0), 64.0);\n\n    // Subtle iridescence from view angle\n    float iAngle = dot(viewDir, normal);\n    vec3 iridescence = vec3(\n      sin(iAngle * 6.28 + time) * 0.5 + 0.5,\n      sin(iAngle * 6.28 + time + 2.094) * 0.5 + 0.5,\n      sin(iAngle * 6.28 + time + 4.189) * 0.5 + 0.5\n    ) * 0.08;\n\n    vec3 rimColor = vec3(0.7, 0.85, 1.0);\n    vec3 finalColor = rimColor * fresnel + iridescence + vec3(1.0) * spec;\n    float alpha = fresnel * 0.4 + spec * 0.5;\n    alpha = clamp(alpha, 0.03, 0.75);\n\n    gl_FragColor = vec4(finalColor, alpha);\n  }\n";
+
+export {
+  CausticsInteractionPlane,
+  type WaterCausticsContextValue,
+  WaterCausticsProvider,
+  type WaterCausticsUniforms,
+  bubbleFragmentShader,
+  bubbleVertexShader,
+  dropFragmentShader,
+  normalFragmentShader,
+  poolCausticsFragmentShader,
+  poolCausticsVertexShader,
+  projectedCausticsFragmentShader,
+  projectedCausticsVertexShader,
+  projectedTileCausticsFragmentShader,
+  updateFragmentShader,
+  useWaterCaustics,
+  vertexShader,
+  waterSurfaceVertexShader,
+};
